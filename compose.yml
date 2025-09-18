@@ -1,0 +1,6 @@
+services:
+  agenda-discord:
+    build: .
+    container_name: agenda-discord
+    env_file:
+      - .env
