@@ -6,3 +6,4 @@ services:
       - .env
     volumes:
       - ./notified_events.txt:/app/notified_events.txt
+    restart: unless-stopped
