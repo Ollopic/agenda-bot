@@ -1,23 +1,28 @@
-from icalendar import Calendar
 import datetime
 import os
+import time
+
 import pytz
 import requests
-import time
+from icalendar import Calendar
 
 ICAL_URL = os.getenv("ICAL_URL")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+
 
 def get_calendar_events(url):
     response = requests.get(url.strip())
     response.raise_for_status()
     return Calendar.from_ical(response.text)
 
+
 def send_discord_message(message: str):
     payload = {"content": message}
     requests.post(DISCORD_WEBHOOK_URL, json=payload)
 
+
 NOTIFIED_EVENTS_FILE = "notified_events.txt"
+
 
 def load_notified_events():
     if not os.path.exists(NOTIFIED_EVENTS_FILE):
@@ -25,15 +30,18 @@ def load_notified_events():
     with open(NOTIFIED_EVENTS_FILE, "r") as f:
         return set(line.strip() for line in f)
 
+
 def save_notified_event(event_id):
     with open(NOTIFIED_EVENTS_FILE, "a") as f:
         f.write(event_id + "\n")
 
+
 def get_calendar_name(cal):
-    name = cal.get('X-WR-CALNAME')
+    name = cal.get("X-WR-CALNAME")
     if name:
         return str(name)
     return "Agenda inconnu"
+
 
 def check_events():
     notified_events = load_notified_events()
@@ -48,8 +56,12 @@ def check_events():
                 uid = str(component.get("UID"))
                 dtstart = component.get("DTSTART").dt
 
-                if isinstance(dtstart, datetime.date) and not isinstance(dtstart, datetime.datetime):
-                    dtstart = datetime.datetime.combine(dtstart, datetime.time.min, tzinfo=pytz.UTC)
+                if isinstance(dtstart, datetime.date) and not isinstance(
+                    dtstart, datetime.datetime
+                ):
+                    dtstart = datetime.datetime.combine(
+                        dtstart, datetime.time.min, tzinfo=pytz.UTC
+                    )
 
                 if (
                     "autonomie" in summary.lower()
@@ -61,7 +73,8 @@ def check_events():
                     )
                     save_notified_event(uid)
 
+
 if __name__ == "__main__":
     while True:
         check_events()
-        time.sleep(60)  # 1 minute
+        time.sleep(300)  # 5 minutes
