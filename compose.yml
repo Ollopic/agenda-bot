@@ -5,5 +5,5 @@ services:
     env_file:
       - .env
     volumes:
-      - ./notified_events.txt:/app/notified_events.txt
+      - ./sent_events.json:/app/sent_events.json
     restart: unless-stopped
