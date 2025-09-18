@@ -2,7 +2,7 @@
 
 ```bash
 git clone https://github.com/Ollopic/agenda-bot.git
-touch notified_events.txt
+touch sent_events.json
 cp .env.example .env
 ```
 
