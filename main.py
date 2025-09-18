@@ -19,269 +19,198 @@ logger = logging.getLogger(__name__)
 
 class AutonomieNotifier:
     def __init__(self):
-        self.ical_urls = os.getenv("ICAL_URL", "").split(",")
+        self.ical_urls = [
+            url.strip() for url in os.getenv("ICAL_URL", "").split(",") if url.strip()
+        ]
         self.discord_webhook = os.getenv("DISCORD_WEBHOOK_URL")
-        self.timezone = os.getenv("TIMEZONE", "Europe/Paris")
+        self.tz = self._setup_timezone(os.getenv("TIMEZONE", "Europe/Paris"))
 
         if not self.ical_urls or not self.discord_webhook:
-            raise ValueError(
-                "ICAL_URL et DISCORD_WEBHOOK_URL doivent être définis dans le .env"
-            )
-
-        try:
-            self.tz = pytz.timezone(self.timezone)
-            logger.info(f"Fuseau horaire configuré: {self.timezone}")
-        except pytz.exceptions.UnknownTimeZoneError:
-            logger.warning(
-                f"Fuseau horaire inconnu '{self.timezone}', utilisation de 'Europe/Paris'"
-            )
-            self.tz = pytz.timezone("Europe/Paris")
+            raise ValueError("ICAL_URL et DISCORD_WEBHOOK_URL doivent être définis")
 
         self.sent_events_file = "sent_events.json"
-        self.sent_events = self.load_sent_events()
+        self.sent_events = self._load_sent_events()
 
-        logger.info(f"Initialisation avec {len(self.ical_urls)} agenda(s)")
-        logger.info(f"Webhook Discord configuré: {self.discord_webhook[:50]}...")
+        logger.info(
+            f"Initialisation: {len(self.ical_urls)} agenda(s), timezone: {self.tz.zone}"
+        )
 
-    def load_sent_events(self) -> Set[str]:
+    def _setup_timezone(self, timezone_str: str) -> pytz.BaseTzInfo:
         try:
-            if os.path.exists(self.sent_events_file):
-                with open(self.sent_events_file, "r") as f:
-                    data = json.load(f)
-                    # Nettoyer les anciens événements (plus de 24h)
-                    cutoff = datetime.now() - timedelta(days=1)
-                    cleaned_data = {
-                        event_id: timestamp
-                        for event_id, timestamp in data.items()
-                        if datetime.fromisoformat(timestamp) > cutoff
-                    }
-                    if len(cleaned_data) != len(data):
-                        logger.info(
-                            f"Nettoyage: suppression de {len(data) - len(cleaned_data)} anciens événements"
-                        )
-                        self.save_sent_events(set(cleaned_data.keys()))
-                    return set(cleaned_data.keys())
-            return set()
-        except Exception as e:
-            logger.error(f"Erreur lors du chargement des événements envoyés: {e}")
+            return pytz.timezone(timezone_str)
+        except pytz.exceptions.UnknownTimeZoneError:
+            logger.warning(
+                f"Timezone '{timezone_str}' inconnue, utilisation d'Europe/Paris"
+            )
+            return pytz.timezone("Europe/Paris")
+
+    def _load_sent_events(self) -> Set[str]:
+        if not os.path.exists(self.sent_events_file):
             return set()
 
-    def save_sent_events(self, events: Set[str]):
+        try:
+            with open(self.sent_events_file, "r") as f:
+                data = json.load(f)
+
+            # Nettoyer les événements de plus de 24h
+            cutoff = datetime.now() - timedelta(days=1)
+            cleaned = {
+                event_id: timestamp
+                for event_id, timestamp in data.items()
+                if datetime.fromisoformat(timestamp) > cutoff
+            }
+
+            if len(cleaned) != len(data):
+                logger.info(
+                    f"Nettoyage: {len(data) - len(cleaned)} anciens événements supprimés"
+                )
+                self._save_sent_events(set(cleaned.keys()))
+
+            return set(cleaned.keys())
+
+        except Exception as e:
+            logger.error(f"Erreur chargement événements: {e}")
+            return set()
+
+    def _save_sent_events(self, events: Set[str]):
         try:
             data = {event_id: datetime.now().isoformat() for event_id in events}
             with open(self.sent_events_file, "w") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            logger.error(f"Erreur lors de la sauvegarde des événements envoyés: {e}")
+            logger.error(f"Erreur sauvegarde: {e}")
 
-    def fetch_calendar(self, url: str) -> Calendar:
-        try:
-            logger.debug(f"Récupération du calendrier: {url[:50]}...")
-            response = requests.get(url.strip(), timeout=30)
-            response.raise_for_status()
+    def _fetch_calendar(self, url: str) -> Calendar:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return Calendar.from_ical(response.content)
 
-            calendar = Calendar.from_ical(response.content)
-            logger.debug("Calendrier récupéré avec succès")
-            return calendar
-        except Exception as e:
-            logger.error(
-                f"Erreur lors de la récupération du calendrier {url[:50]}: {e}"
-            )
-            raise
+    def _normalize_datetime(self, dt) -> datetime:
+        if hasattr(dt, "date"):  # datetime object
+            if dt.tzinfo is None:
+                return self.tz.localize(dt)
+            return dt.astimezone(self.tz)
+        else:  # date object
+            return self.tz.localize(datetime.combine(dt, datetime.min.time()))
 
-    def get_calendar_name(self, calendar: Calendar) -> str:
-        try:
-            return str(calendar.get("X-WR-CALNAME", "Agenda"))
-        except:
-            return "Agenda"
-
-    def is_event_current(self, event) -> bool:
+    def _is_event_current(self, event) -> bool:
         try:
             now = datetime.now(self.tz)
 
             dtstart = event.get("dtstart")
-            dtend = event.get("dtend")
-
             if not dtstart:
                 return False
 
-            start_dt = dtstart.dt
-            end_dt = dtend.dt if dtend else start_dt + timedelta(hours=1)
+            start_time = self._normalize_datetime(dtstart.dt)
 
-            if hasattr(start_dt, "date"):
-                if hasattr(start_dt, "tzinfo") and start_dt.tzinfo is not None:
-                    start_time = start_dt.astimezone(self.tz)
-                else:
-                    start_time = self.tz.localize(start_dt.replace(tzinfo=None))
+            dtend = event.get("dtend")
+            if dtend:
+                end_time = self._normalize_datetime(dtend.dt)
             else:
-                start_time = self.tz.localize(
-                    datetime.combine(start_dt, datetime.min.time())
-                )
-                end_dt = self.tz.localize(
-                    datetime.combine(start_dt, datetime.max.time())
-                )
+                end_time = start_time + timedelta(hours=1)
 
-            if hasattr(end_dt, "date"):
-                if hasattr(end_dt, "tzinfo") and end_dt.tzinfo is not None:
-                    end_time = end_dt.astimezone(self.tz)
-                else:
-                    end_time = self.tz.localize(end_dt.replace(tzinfo=None))
-            else:
-                end_time = self.tz.localize(
-                    datetime.combine(end_dt, datetime.max.time())
-                )
-
-            is_current = start_time <= now <= end_time
-
-            if is_current:
-                logger.debug(
-                    f"Événement en cours: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')} (maintenant: {now.strftime('%H:%M')})"
-                )
-
-            return is_current
+            return start_time <= now <= end_time
 
         except Exception as e:
-            logger.error(
-                f"Erreur lors de la vérification de l'heure de l'événement: {e}"
-            )
+            logger.error(f"Erreur vérification heure événement: {e}")
             return False
 
-    def create_event_id(self, event, calendar_name: str) -> str:
+    def _create_event_id(self, event, calendar_name: str) -> str:
+        uid = event.get("uid", "")
+        if uid:
+            return f"{calendar_name}_{uid}"
+
+        summary = str(event.get("summary", ""))
+        dtstart = event.get("dtstart")
+        start_str = str(dtstart.dt) if dtstart else "no_time"
+
+        return f"{calendar_name}_{summary}_{start_str}"
+
+    def _send_discord_message(self, message: str):
+        data = {"content": f"@everyone {message}", "username": "Autonomie Bot"}
+        response = requests.post(self.discord_webhook, json=data, timeout=10)
+        response.raise_for_status()
+        logger.info(f"Message Discord envoyé: {message[:100]}...")
+
+    def _format_datetime(self, dt) -> str:
         try:
-            uid = event.get("uid", "")
-            summary = str(event.get("summary", ""))
-            dtstart = event.get("dtstart")
-
-            if uid:
-                return f"{calendar_name}_{uid}"
-
-            if dtstart:
-                start_str = str(dtstart.dt)
-                return f"{calendar_name}_{summary}_{start_str}"
-
-            return f"{calendar_name}_{summary}_{hash(str(event))}"
-
-        except Exception as e:
-            logger.error(f"Erreur lors de la création de l'ID d'événement: {e}")
-            return f"{calendar_name}_{hash(str(event))}"
-
-    def send_discord_message(self, message: str):
-        try:
-            data = {"content": message, "username": "Autonomie Bot"}
-
-            response = requests.post(self.discord_webhook, json=data, timeout=10)
-            response.raise_for_status()
-
-            logger.info(f"Message Discord envoyé avec succès: {message[:100]}...")
-
-        except Exception as e:
-            logger.error(f"Erreur lors de l'envoi du message Discord: {e}")
-
-    def format_datetime(self, dt) -> str:
-        try:
-            if hasattr(dt, "strftime"):
-                if hasattr(dt, "tzinfo") and dt.tzinfo is not None:
-                    dt = dt.astimezone(self.tz)
-                elif hasattr(dt, "tzinfo") and dt.tzinfo is None:
-                    dt = self.tz.localize(dt)
-
-                return dt.strftime("%d/%m/%Y à %H:%M")
-            return str(dt)
-        except Exception as e:
-            logger.debug(f"Erreur formatage datetime: {e}")
+            normalized_dt = self._normalize_datetime(dt)
+            return normalized_dt.strftime("%d/%m/%Y à %H:%M")
+        except:
             return str(dt)
 
     def check_autonomie_events(self):
-        logger.info("Début de la vérification des événements d'autonomie")
-        events_found = 0
-        notifications_sent = 0
+        logger.info("Vérification des événements d'autonomie")
+        events_found = notifications_sent = 0
 
         for url in self.ical_urls:
-            if not url.strip():
-                continue
-
             try:
-                calendar = self.fetch_calendar(url)
-                calendar_name = self.get_calendar_name(calendar)
+                calendar = self._fetch_calendar(url)
+                calendar_name = str(calendar.get("X-WR-CALNAME", "Agenda"))
 
-                logger.info(f"Vérification du calendrier: {calendar_name}")
+                logger.info(f"Vérification: {calendar_name}")
 
                 for component in calendar.walk():
-                    if component.name == "VEVENT":
-                        events_found += 1
+                    if component.name != "VEVENT":
+                        continue
 
-                        summary = str(component.get("summary", "")).lower()
-                        if "autonomie" not in summary:
-                            continue
+                    events_found += 1
+                    summary = str(component.get("summary", "")).lower()
 
-                        logger.debug(
-                            f"Événement d'autonomie trouvé: {component.get('summary', '')}"
-                        )
+                    if "autonomie" not in summary:
+                        continue
 
-                        if not self.is_event_current(component):
-                            continue
+                    if not self._is_event_current(component):
+                        continue
 
-                        event_id = self.create_event_id(component, calendar_name)
+                    event_id = self._create_event_id(component, calendar_name)
+                    if event_id in self.sent_events:
+                        continue
 
-                        if event_id in self.sent_events:
-                            logger.debug(f"Notification déjà envoyée pour: {event_id}")
-                            continue
+                    course_name = str(component.get("summary", "Cours d'autonomie"))
+                    start_time = component.get("dtstart")
+                    start_formatted = (
+                        self._format_datetime(start_time.dt)
+                        if start_time
+                        else "maintenant"
+                    )
 
-                        course_name = str(component.get("summary", "Cours d'autonomie"))
-                        start_time = component.get("dtstart")
-                        start_formatted = (
-                            self.format_datetime(start_time.dt)
-                            if start_time
-                            else "maintenant"
-                        )
+                    message = f"[{calendar_name}] Émarger pour le cours {course_name} à {start_formatted}"
+                    self._send_discord_message(message)
 
-                        message = f"[{calendar_name}] Émarger pour le cours {course_name} à {start_formatted}"
-
-                        self.send_discord_message(message)
-
-                        self.sent_events.add(event_id)
-                        notifications_sent += 1
-
-                        logger.info(f"Notification envoyée pour: {course_name}")
+                    self.sent_events.add(event_id)
+                    notifications_sent += 1
+                    logger.info(f"Notification envoyée: {course_name}")
 
             except Exception as e:
-                logger.error(
-                    f"Erreur lors de la vérification du calendrier {url[:50]}: {e}"
-                )
+                logger.error(f"Erreur calendrier {url[:50]}: {e}")
 
         if notifications_sent > 0:
-            self.save_sent_events(self.sent_events)
+            self._save_sent_events(self.sent_events)
 
         logger.info(
-            f"Vérification terminée: {events_found} événements analysés, {notifications_sent} notifications envoyées"
+            f"Terminé: {events_found} événements, {notifications_sent} notifications"
         )
 
     def run_continuous(self, interval_minutes: int = 5):
-        logger.info(
-            f"Démarrage du service de surveillance (vérification toutes les {interval_minutes} minutes)"
-        )
+        logger.info(f"Surveillance démarrée (intervalle: {interval_minutes} min)")
 
         while True:
             try:
                 self.check_autonomie_events()
-                logger.info(f"Prochaine vérification dans {interval_minutes} minutes")
                 time.sleep(interval_minutes * 60)
-
             except KeyboardInterrupt:
-                logger.info("Arrêt du service demandé par l'utilisateur")
+                logger.info("Arrêt demandé")
                 break
             except Exception as e:
                 logger.error(f"Erreur inattendue: {e}")
-                logger.info("Reprise dans 1 minute...")
-                time.sleep(60)
+                time.sleep(60)  # Attendre 1 min avant de reprendre
 
 
 def main():
     try:
         notifier = AutonomieNotifier()
-
         notifier.run_continuous()
-
     except Exception as e:
         logger.error(f"Erreur fatale: {e}")
 
