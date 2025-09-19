@@ -24,6 +24,8 @@ class AutonomieNotifier:
         ]
         self.discord_webhook = os.getenv("DISCORD_WEBHOOK_URL")
         self.tz = self._setup_timezone(os.getenv("TIMEZONE", "Europe/Paris"))
+        self.ROLE_ID_DAS = os.getenv("ROLE_ID_DAS", "ROLE_ID_DAS")
+        self.ROLE_ID_ASR = os.getenv("ROLE_ID_ASR", "ROLE_ID_ASR")
 
         if not self.ical_urls or not self.discord_webhook:
             raise ValueError("ICAL_URL et DISCORD_WEBHOOK_URL doivent être définis")
@@ -126,8 +128,13 @@ class AutonomieNotifier:
 
         return f"{calendar_name}_{summary}_{start_str}"
 
-    def _send_discord_message(self, message: str):
-        data = {"content": f"@everyone {message}", "username": "Autonomie Bot"}
+    def _send_discord_message(self, message: str, calendar_name: str):
+        mention = "@everyone"
+        if "DAS" in calendar_name.upper():
+            mention = f"<@&{self.ROLE_ID_DAS}>"
+        elif "ASR" in calendar_name.upper():
+            mention = f"<@&{self.ROLE_ID_ASR}>"
+        data = {"content": f"{mention} {message}", "username": "Autonomie Bot"}
         response = requests.post(self.discord_webhook, json=data, timeout=10)
         response.raise_for_status()
         logger.info(f"Message Discord envoyé: {message[:100]}...")
@@ -176,7 +183,7 @@ class AutonomieNotifier:
                     )
 
                     message = f"[{calendar_name}] Émarger pour le cours {course_name} à {start_formatted}"
-                    self._send_discord_message(message)
+                    self._send_discord_message(message, calendar_name)
 
                     self.sent_events.add(event_id)
                     notifications_sent += 1
