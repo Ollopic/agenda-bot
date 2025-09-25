@@ -26,6 +26,7 @@ class AutonomieNotifier:
         self.tz = self._setup_timezone(os.getenv("TIMEZONE", "Europe/Paris"))
         self.ROLE_ID_DAS = os.getenv("ROLE_ID_DAS", "ROLE_ID_DAS")
         self.ROLE_ID_ASR = os.getenv("ROLE_ID_ASR", "ROLE_ID_ASR")
+        self.ROLE_ID_CYS = os.getenv("ROLE_ID_CYS", "ROLE_ID_CYS")
 
         if not self.ical_urls or not self.discord_webhook:
             raise ValueError("ICAL_URL et DISCORD_WEBHOOK_URL doivent être définis")
@@ -134,6 +135,8 @@ class AutonomieNotifier:
             mention = f"<@&{self.ROLE_ID_DAS}>"
         elif "ASR" in calendar_name.upper():
             mention = f"<@&{self.ROLE_ID_ASR}>"
+        elif "CYS" in calendar_name.upper():
+            mention = f"<@&{self.ROLE_ID_CYS}>"
         data = {"content": f"{mention} {message}", "username": "Autonomie Bot"}
         response = requests.post(self.discord_webhook, json=data, timeout=10)
         response.raise_for_status()

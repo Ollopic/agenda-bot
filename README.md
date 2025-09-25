@@ -33,4 +33,5 @@ ICAL_URL=https://exemple.com/calendrier1.ics,https://exemple.com/calendrier2.ics
 ```env
 ROLE_ID_DAS=123456789012345678
 ROLE_ID_ASR=987654321098765432
+ROLE_ID_CYS=112233445566778899
 ```
