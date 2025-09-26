@@ -146,7 +146,7 @@ class AutonomieNotifier:
         try:
             normalized_dt = self._normalize_datetime(dt)
             return normalized_dt.strftime("%d/%m/%Y à %H:%M")
-        except:
+        except Exception:
             return str(dt)
 
     def check_autonomie_events(self):
